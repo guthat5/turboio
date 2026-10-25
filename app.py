@@ -13,6 +13,7 @@ import urllib.parse
 import html
 import secrets
 import hashlib
+import hmac
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, session
 
@@ -62,6 +63,10 @@ CHANNEL_CHECK_INTERVAL = 300  # seconds between channel-membership checks of key
 
 ONLINE_USERS = {}
 ONLINE_THRESHOLD = 90
+
+# Website (Cloudflare Worker) က Key အခြေအနေ ဖတ်ဖို့ သုံးတဲ့ token
+# Server မှာ environment variable အဖြစ် PANEL_API_TOKEN သတ်မှတ်ပါ (မသတ်ရင် API ပိတ်ထားမယ်)
+PANEL_API_TOKEN = os.environ.get("PANEL_API_TOKEN", "")
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -960,6 +965,30 @@ def api_online_users():
         "count": len(online),
         "users": online
     })
+
+@app.route("/api/public/status")
+def api_public_status():
+    """Website ကနေ token နဲ့ ခေါ်ပြီး Key တစ်ခုချင်းစီရဲ့ online/data/သက်တမ်း ကိုဖတ်ဖို့"""
+    token = request.headers.get("X-Api-Token", "")
+    if not PANEL_API_TOKEN or not hmac.compare_digest(token.encode("utf-8"), PANEL_API_TOKEN.encode("utf-8")):
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+    users = []
+    for u in get_all_users():
+        e = enrich_user(dict(u))
+        users.append({
+            "uuid": e["uuid"],
+            "online": bool(e["is_online"]),
+            "active": bool(e["is_active"]),
+            "used_gb": e["used_gb"],
+            "quota_gb": e["quota_gb"],
+            "days_left": e["days_left"],
+        })
+
+    # Server (Xray) အလုပ်လုပ်နေလား - Admin က ရပ်ထားရင်/Xray ပျက်နေရင် False
+    server_up = is_xray_running() and not is_server_stopped()
+
+    return jsonify({"status": "success", "xray": server_up, "users": users})
 
 @app.route("/settings")
 def settings():
